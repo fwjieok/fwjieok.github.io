@@ -1,3 +1,293 @@
-<h1>樊文杰的博客</h1>
+<html>
+  <head>
+    <title>A simplified RTSP client</title>
+  </head>
+  <body bgcolor=#ffffff>
 
-<h1>Welcome</h1>
+    <h1>Specifications for a simple RTSP client</h1>
+
+    <h3>Abstract</h3>
+    <i>
+      This document describes a simple implementation of the client side of an RTSP session, including the minimal requirements to complete a successful dialogue with the IFI extension of the Darwin Streaming Server RTSP implementation. Here, emphasis is made on making parsing and error control as simple as possible, not necessarily following all the aspects of the RTSP standard (<a href="http://www.faqs.org/rfcs/rfc2326.html">RFC 2326</a>) requirements.
+    </i>
+
+    <h3>Connecting</h3>
+    The client is initially supplied with an RTSP URL, on the form:
+
+    <b>
+      <pre>
+rtsp://server.address:port/object.sdp
+      </pre>
+    </b>
+
+    The URL is either supplied within a simple text file, the file name being supplied as a command line parameter when the client is started, or hopefully, the client is able to accept user input in a text box in the client's graphical user interface.
+
+    <p>
+
+      There are a number of things the client should check while parsing the URL:
+
+      <ul>
+        <li>Whether the URL starts with "<kbd>rtsp://</kbd>" (no case sensitivity)
+          <li>Whether the server address is invalid or not (either DNS name or IP address should be accepted)
+            <li>If port number is included (simply check for a colon, '<kbd>:</kbd>'), it should check if this port number is valid (an unsigned integer, less than 65536)
+      </ul>
+
+      What comes after the last slash ('<kbd>/</kbd>'), we can leave to the server parser (in our case, however, it would be nice to check whether the object ends with "<kbd>.sdp</kbd>", since this is required to activate <b>our</b> reflector capabilities in the RTSP server).
+
+      <p>
+
+        After parsing the URL, the client should have a valid server address (at least lexically), and possibly a port number. If no port number is supplied, the default "well known port" for RTSP is assumed, which is <kbd>554</kbd>.
+
+        <p>
+
+          As soon as the URL is parsed, a TCP connection should be made to the obtained server address/port. The client should then transmit the <kbd>DESCRIBE</kbd> request as follows:
+
+          <p>
+
+            Client:
+
+            <b>
+              <pre>
+DESCRIBE rtsp://server.address:port/object.sdp RTSP/1.0\r\n
+CSeq: 1\r\n
+\r\n
+              </pre>
+            </b>
+
+            Here, of course, '<kbd>\r\n</kbd>' is not to be taken literally, but as return and newline characters (as in <kbd>printf</kbd> in the C programming language). The describe request should include the RTSP URL exactly as supplied by the user/caller. The "<kbd>CSeq</kbd>" header field is used in sequence numbering, and not really necessary to operate the RTSP server (it is mandatory according to the standard, however). It is mainly practical when not operating with an open TCP connection during the entire session, for the client to make sure no messages are lost. The server will blindly echo the sequence number, including a "<kbd>CSeq</kbd>" header in the response messages.
+
+            <p>
+
+              The TCP connection can remain open for the duration of the session, but there is no reason why the connection should be maintained after the first <kbd>SETUP</kbd> request. It is necessary, however, to keep the connection alive while doing the <kbd>DESCRIBE</kbd> and the following <kbd>SETUP</kbd> requests, because of the the way in which the server is implemented.
+
+              <h3>Receiving SDP information</h3>
+
+              The server may respond to the <kbd>DESCRIBE</kbd> request in any number of ways (or it might not respond at all), but it is safe to assume that any other response than "<kbd>RTSP/1.0 200 OK</kbd>" in the first line might indicate an error situation (and a good excuse to give up on this particular session). A successful response to the <kbd>DESCRIBE</kbd> might look as follows:
+
+              <p>
+
+                Server:
+
+                <b>
+                  <pre>
+RTSP/1.0 200 OK\n
+Server: QTSS(IFI)/v88\n
+Cseq: 1\n
+Content-Type: application/sdp\n
+Content-Base: rtsp://bildeus.ifi.uio.no:8000/12.sdp/\n
+Content-length: 785\n
+\n
+n=2236805513 2236805513 932036356 224.2.127.254 9875 127 trusted\n
+v=0\n
+o=yozo 3138827440 3138828177 IN IP4 aohakobe.ipc.chiba-u.ac.jp\n
+s=Places all over the world\n
+i=Low bandwidth video (10kb/s) with views from all over the world. Audio is primarily for feedback for the senders of video. (looks like there's some problem for the session announcement from sweden distributes to the whole MBone, I'm repeating the announcement from japan. -- yozo.)\n
+e=Yozo TODA at IPC, Chiba University, JAPAN &lt;yozo@ipc.chiba-u.ac.jp.&gt;\n
+p=+81-43-290-3539\n
+c=IN IP4 224.2.213.113/127\n
+t=3138827400 3141246600\n
+a=tool:sdr v2.6.1\n
+a=type:test\n
+m=audio 20154 RTP/AVP 0\n
+c=IN IP4 224.2.213.113/127\n
+a=ptime:40\n
+a=control:trackID=1\n
+m=video 51482 RTP/AVP 31\n
+c=IN IP4 224.2.172.238/127\n
+a=control:trackID=2\n
+                  </pre>
+                </b>
+
+                It's not necessary to parse the SDP information entirely. It will suffice to extract the lines containing "<kbd>a=control:trackID=x</kbd>" and keep hold of these control strings. It will also be necessary to extract the associated "<kbd>m=...</kbd>" lines kbdceding the control attributes. These indicate the nature of the media stream, and hence which tool is required to render it ("<kbd>video</kbd>" and "<kbd>audio</kbd>" indicating <kbd>vic</kbd> and <kbd>rat</kbd>, respectively).
+
+                <p>
+
+                  What to do if there are other media descriptors than "<kbd>video</kbd>" or "<kbd>audio</kbd>" is not decided, but the best thing to do might be to ignore them altogether, telling the user that "unknown media types were encountered". If no known media type is found, the client must terminate gracefully.
+
+                  <h3>Setting up</h3>
+
+                  To set up, the "<kbd>SETUP</kbd>" request must be issued. It might look like this:
+
+                  <p>
+
+                    Client:
+
+                    <pre>
+                      <b>
+                        SETUP rtsp://server.address:port/object.sdp/trackID=1 RTSP/1.0\r\n
+                        CSeq: 2\r\n
+                        Transport: RTP/AVP;unicast;client_port=9000-9001\r\n
+                        \r\n
+                      </b>
+                    </pre>
+
+                    This request must be issued for each of the control strings obtained above (leaving out the ones rekbdsenting media types we can't handle, of course). Note that the original URL is used, augmented by a slash ('<kbd>/</kbd>') and the control string. For the first one of these requests, the server (if all goes well) will respond with:
+
+                    <p>
+
+                      Server:
+
+                      <pre>
+                        <b>
+                          RTSP/1.0 200 OK\n
+                          Server: QTSS(IFI)/v88\n
+                          Cseq: 2\n
+                          Session: 1234567890;timeout=60
+                          Transport: rtp/avp;source=129.240.65.208;server_port=9000-9001;client_port=9000-9001\n
+                          \n
+                        </b>
+                      </pre>
+
+                      All consecutive <kbd>SETUP</kbd> requests must include the session header field. It looks like this:
+
+                      <p>
+
+                        Client:
+                        <pre>
+                          <b>
+                            SETUP rtsp://server.address:port/object.sdp/trackID=2 RTSP/1.0\r\n
+                            CSeq: 3\r\n
+                            Session: 1234567890\r\n
+                            Transport: RTP/AVP;unicast;client_port=9000-9001\r\n
+                            \r\n
+                          </b>
+                        </pre>
+
+                        <p>
+
+                          Even though in this example, the session identifier contains only numbers, the standard allows alpha characters as well. So making the client able to accept <kbd>2Ak432zDQr</kbd> just as well as <kbd>1234567890</kbd> would be a good idea (case-sensitive, of course). The standard requires the identifier to be at least 8 octets long.
+
+                          <p>
+
+                            Again, anything other than "<kbd>RTSP/1.0 200 OK</kbd>" might indicate error, and should result in termination. In the responses, the information worth making a note of is the <kbd>source</kbd> attribute in the transport header field, and the <kbd>client_port</kbd> attribute. These will be needed to start the media tools later on.
+
+                            <p>
+
+                              Setting up a reflector session is only required if the client host is not capable of multicast on the MBone. However, using the returned SDP information to start the Meccano tools will require a much more elaborate parsing. For the sake of simplicity, we might assume that the client is <b>not</b> MBone capable.
+
+                              <p>
+
+                                <i>
+                                  Otherwise we might issue the <kbd>SETUP</kbd> request with "<kbd>multicast</kbd>" instead of "<kbd>unicast</kbd>" in the transport header field. The server can then respond with the appropriate multicast address/port numbers instead of setting up the reflector. This, however, remains to be implemented in the server. Other problems might arise as well, since the multicast sessions visible to the reflector/listener system might not be visible to the client. A more complete client would parse the SDP information, determine whether the multicast session is reachable, and initiate rendering on its own.
+                                </i>
+
+                                <h3>Start playing</h3>
+
+                                To start getting the media packets, all we have to do is to send a "<kbd>PLAY</kbd>" request to the server. It looks like this:
+
+                                <p>
+
+                                  Client:
+
+                                  <b>
+                                    <pre>
+PLAY rtsp://server.address:port/object.sdp RTSP/1.0\r\n
+CSeq: 4\r\n
+Session: 1234567890\r\n
+\r\n
+                                    </pre>
+                                  </b>
+
+                                  Note that the control string is omitted, hence the request applies to all streams currently set up. Again, other responses than "<kbd>RTSP/1.0 200 OK</kbd>" is handled as a fatal error.
+
+                                  <p>
+
+                                    Now is the time for starting up the media tools, using the source address and port number obtained above. Note that the media tools only require one of the port numbers acquired, for an example, if the transport header from the server includes "<kbd>client_port=9000-9001</kbd>", the media tool only needs port number 9000 in its command line parameters.
+
+                                    <p>
+
+                                      <h3>Pausing</h3>
+
+                                      This is handled the same way as playing. These two actions might be implemented using a single button in the client's graphical user interface, toggling between play and pause.
+
+                                      <p>
+
+                                        Client:
+
+                                        <b>
+                                          <pre>
+PAUSE rtsp://server.address:port/object.sdp RTSP/1.0\r\n
+CSeq: 5\r\n
+Session: 1234567890\r\n
+\r\n
+                                          </pre>
+                                        </b>
+
+                                        <h3>Tearing down</h3>
+
+                                        The request "<kbd>TEARDOWN</kbd>" is only issued at the very end of the session. This makes the server release all its resources pertaining to the session, and new <kbd>SETUP</kbd> requests will have to be sent in order to restart the media streams. It looks like this:
+
+                                        <p>
+
+                                          Client:
+
+                                          <b>
+                                            <pre>
+TEARDOWN rtsp://server.address:port/object.sdp RTSP/1.0\r\n
+CSeq: 6\r\n
+Session: 1234567890\r\n
+\r\n
+                                            </pre>
+                                          </b>
+
+                                          The server will reply:
+
+                                          <p>
+
+                                            Server:
+
+                                            <b>
+                                              <pre>
+RTSP/1.0 200 OK\n
+Server: QTSS(IFI)/v88\n
+Cseq: 6\n
+Session: 537103309\n
+Connection: Close\n
+\n
+                                              </pre>
+                                            </b>
+
+                                            When the reply to this message is received, the client can safely disconnect. The sequence number is really not required. However, the <kbd>Session:</kbd> header field is mandatory.
+
+                                            <p>
+
+                                              <b>Important:</b> The <kbd>TEARDOWN</kbd> <b>must</b> be issued before the client application is allowed to terminate, otherwise the reflector is liable to swamp the client host with unwanted udp packets. Another thing which might pose a problem, is that of client bandwidth. If reflector output surpasses available bandwitdh between itself and the client, TCP traffic to the RTSP server might be blocked. This situation is extremely undisirable, because the client internet connection in effect becomes unusable. The solution to this problem (at the moment), has been to implement a refresh timeout in the server. The client is required to send "dummy" requests within certain intervals. The most suited request for this, is <kbd>OPTIONS</kbd>. The timeout period (in seconds) is indicated by the <kbd>SETUP</kbd> reply message, in the session header field. To keep the session alive, just send along an <kbd>OPTIONS</kbd> request every now and then. It's done like this:
+
+                                              <p>
+
+                                                Client:
+
+                                                <b>
+                                                  <pre>
+OPTIONS rtsp://server.address:port/object.sdp RTSP/1.0\r\n
+CSeq: 6\r\n
+Session: 1234567890\r\n
+\r\n
+                                                  </pre>
+                                                </b>
+
+                                                Failure to pass these refresh "requests" would in effect mean the same as a <kbd>TEARDOWN</kbd> request.
+
+                                                <h3>Summary</h3>
+
+                                                The client may operate in three distinct states, <i>disconnected</i>, <i>playing</i> and <i>paused</i>. When the application is started, the state is of course "disconnected". After starting up, the client issues the requests <kbd>DESCRIBE</kbd>, <kbd>SETUP</kbd> and <kbd>PLAY</kbd>, and enters the "playing" state. The play button changes into a pause button, and the media rendering tools are started. During this state, the client sends the <kbd>OPTIONS</kbd> request regularly.
+
+                                                <p>
+
+                                                  When the user kbdsses the recently appeared pause button, the <kbd>PAUSE</kbd> request is sent, and state is transferred into "paused". The pause button changes into a play button. When the user kbdsses the exit button (or exits the client application), <kbd>TEARDOWN</kbd> is sent, the TCP channel is broken, and the media tools are terminated.
+
+                                                  <p>
+
+                                                    An example of how the client dialog might look like, is included below.
+
+                                                    <p>
+
+                                                      <center>
+                                                        <img src="dialog.gif">
+                                                      </center>
+
+                                                      <i>Written by Guy Thomas Kv&aelig;rnberg, <a href="mailto:guyk@ifi.uio.no">guyk@ifi.uio.no</a>.</i>
+
+  </body>
+</html>
+
